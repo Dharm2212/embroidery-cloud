@@ -1,18 +1,17 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const pool = require("./db");
-
-require("./mqtt");
-require("./effi");
+const { Pool } = require("pg");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
-// ================= RECEIVE ESP DATA =================
 app.post("/api/data", async (req, res) => {
   try {
     const { deviceId, stitches, threadBreak, status, event } = req.body;
@@ -28,19 +27,20 @@ app.post("/api/data", async (req, res) => {
     if (machine.rows.length === 0) {
       machine = await pool.query(
         `INSERT INTO machines
-        (machine_uid, status, total_stitches, last_seen, target_stitches_10min)
-        VALUES ($1,$2,$3,NOW(),1000)
-        RETURNING *`,
-        [deviceId, status || "OFF", stitches || 0]
+         (machine_uid, status, total_stitches, thread_break_count)
+         VALUES ($1,$2,$3,$4)
+         RETURNING *`,
+        [deviceId, status || "OFF", stitches || 0, threadBreak || 0]
       );
     } else {
       await pool.query(
         `UPDATE machines
          SET status=$1,
              total_stitches=$2,
+             thread_break_count=$3,
              last_seen=NOW()
-         WHERE machine_uid=$3`,
-        [status || "OFF", stitches || 0, deviceId]
+         WHERE machine_uid=$4`,
+        [status || "OFF", stitches || 0, threadBreak || 0, deviceId]
       );
     }
 
@@ -48,13 +48,13 @@ app.post("/api/data", async (req, res) => {
 
     await pool.query(
       `INSERT INTO machine_events
-      (machine_id, stitch_count, thread_break, is_running, event_type, event_time)
-      VALUES ($1,$2,$3,$4,$5,NOW())`,
+       (machine_id, stitch_count, thread_break, status, event_type)
+       VALUES ($1,$2,$3,$4,$5)`,
       [
         machineId,
         stitches || 0,
         threadBreak || 0,
-        status === "RUNNING",
+        status || "OFF",
         event || "heartbeat"
       ]
     );
@@ -62,91 +62,54 @@ app.post("/api/data", async (req, res) => {
     res.json({ status: "stored" });
 
   } catch (err) {
-    console.error("API Error:", err);
-    res.status(500).json({ error: "Database error" });
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
-// ================= DASHBOARD =================
 app.get("/", async (req, res) => {
-  try {
-    const machines = await pool.query(
-      "SELECT * FROM machines ORDER BY last_seen DESC"
-    );
 
-    const events = await pool.query(
-      `SELECT me.*, m.machine_uid
-       FROM machine_events me
-       JOIN machines m ON me.machine_id=m.id
-       ORDER BY event_time DESC
-       LIMIT 30`
-    );
+  const machines = await pool.query(
+    "SELECT * FROM machines ORDER BY last_seen DESC"
+  );
 
-    let html = `
-    <html>
-    <head>
-      <title>Embroidery Monitoring</title>
-      <meta http-equiv="refresh" content="10">
-      <style>
-        body { font-family:Arial; background:#f4f4f4; padding:20px; }
-        .card { background:white; padding:15px; margin:10px; border-radius:8px; }
-        .running { color:green; font-weight:bold; }
-        .off { color:red; font-weight:bold; }
-        table { width:100%; border-collapse: collapse; margin-top:20px; }
-        th,td { border:1px solid #ccc; padding:8px; }
-      </style>
-    </head>
-    <body>
-    <h1>🧵 Embroidery Dashboard</h1>
-    `;
+  let html = `
+  <html>
+  <head>
+    <title>Embroidery Dashboard</title>
+    <meta http-equiv="refresh" content="10">
+    <style>
+      body { font-family:Arial; background:#f4f4f4; padding:20px; }
+      .card { background:white; padding:15px; margin:10px; border-radius:8px; }
+      .running { color:green; font-weight:bold; }
+      .off { color:red; font-weight:bold; }
+    </style>
+  </head>
+  <body>
+  <h1>🧵 Embroidery Dashboard</h1>
+  `;
 
-    machines.rows.forEach(m => {
-      const online =
-        (Date.now() - new Date(m.last_seen)) < 60000;
-
-      html += `
-      <div class="card">
-        <h2>${m.machine_uid}</h2>
-        <p>Status: <span class="${m.status === "RUNNING" ? "running" : "off"}">${m.status}</span></p>
-        <p>Total Stitches: ${m.total_stitches}</p>
-        <p>Online: ${online ? "YES" : "NO"}</p>
-      </div>
-      `;
-    });
-
+  machines.rows.forEach(m => {
     html += `
-    <h2>Recent Events</h2>
-    <table>
-      <tr>
-        <th>Machine</th>
-        <th>Stitches</th>
-        <th>ThreadBreak</th>
-        <th>Event</th>
-        <th>Time</th>
-      </tr>
+    <div class="card">
+      <h2>${m.machine_uid}</h2>
+      <p>Status:
+        <span class="${m.status === "RUNNING" ? "running" : "off"}">
+          ${m.status}
+        </span>
+      </p>
+      <p>Total Stitches: ${m.total_stitches}</p>
+      <p>Thread Break Count: ${m.thread_break_count}</p>
+      <p>Last Seen: ${new Date(m.last_seen).toLocaleString()}</p>
+    </div>
     `;
+  });
 
-    events.rows.forEach(e => {
-      html += `
-      <tr>
-        <td>${e.machine_uid}</td>
-        <td>${e.stitch_count}</td>
-        <td>${e.thread_break}</td>
-        <td>${e.event_type}</td>
-        <td>${new Date(e.event_time).toLocaleString()}</td>
-      </tr>
-      `;
-    });
+  html += `</body></html>`;
 
-    html += `</table></body></html>`;
-
-    res.send(html);
-
-  } catch (err) {
-    res.status(500).send("Dashboard Error");
-  }
+  res.send(html);
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("Server running on port", PORT);
+app.listen(process.env.PORT || 3000, () => {
+  console.log("Server running");
 });
