@@ -7,27 +7,56 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ================= DATABASE CONNECTION =================
+// ================= DATABASE =================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// Check DB connection + show DB name
+// Initialize DB + Create Tables If Missing
 (async () => {
   try {
     await pool.connect();
     console.log("PostgreSQL Connected");
 
-    const result = await pool.query("SELECT current_database()");
-    console.log("BACKEND CONNECTED TO DB:", result.rows[0].current_database);
+    const db = await pool.query("SELECT current_database()");
+    console.log("Connected Database:", db.rows[0].current_database);
+
+    const user = await pool.query("SELECT current_user");
+    console.log("Connected As User:", user.rows[0].current_user);
+
+    // Auto-create tables (SAFE)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS public.machines (
+        id SERIAL PRIMARY KEY,
+        machine_uid VARCHAR(100) UNIQUE NOT NULL,
+        status VARCHAR(50) DEFAULT 'OFF',
+        total_stitches BIGINT DEFAULT 0,
+        thread_break_count INT DEFAULT 0,
+        last_seen TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS public.machine_events (
+        id SERIAL PRIMARY KEY,
+        machine_id INT REFERENCES public.machines(id),
+        stitch_count BIGINT,
+        thread_break INT,
+        status VARCHAR(50),
+        event_type VARCHAR(50),
+        event_time TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    console.log("Tables verified / created");
 
   } catch (err) {
-    console.error("DB Connection Error:", err);
+    console.error("DB INIT ERROR:", err);
   }
 })();
 
-// ================= RECEIVE DATA =================
+// ================= API =================
 app.post("/api/data", async (req, res) => {
   try {
     const { deviceId, stitches, threadBreak, status, event } = req.body;
@@ -37,7 +66,7 @@ app.post("/api/data", async (req, res) => {
     }
 
     let machine = await pool.query(
-      "SELECT * FROM machines WHERE machine_uid=$1",
+      "SELECT * FROM public.machines WHERE machine_uid=$1",
       [deviceId]
     );
 
@@ -45,10 +74,10 @@ app.post("/api/data", async (req, res) => {
 
     if (machine.rows.length === 0) {
       const insert = await pool.query(
-        `INSERT INTO machines
+        `INSERT INTO public.machines
          (machine_uid, status, total_stitches, thread_break_count)
          VALUES ($1,$2,$3,$4)
-         RETURNING *`,
+         RETURNING id`,
         [deviceId, status || "OFF", stitches || 0, threadBreak || 0]
       );
       machineId = insert.rows[0].id;
@@ -56,7 +85,7 @@ app.post("/api/data", async (req, res) => {
       machineId = machine.rows[0].id;
 
       await pool.query(
-        `UPDATE machines
+        `UPDATE public.machines
          SET status=$1,
              total_stitches=$2,
              thread_break_count=$3,
@@ -67,7 +96,7 @@ app.post("/api/data", async (req, res) => {
     }
 
     await pool.query(
-      `INSERT INTO machine_events
+      `INSERT INTO public.machine_events
        (machine_id, stitch_count, thread_break, status, event_type)
        VALUES ($1,$2,$3,$4,$5)`,
       [
@@ -82,8 +111,8 @@ app.post("/api/data", async (req, res) => {
     res.json({ success: true });
 
   } catch (err) {
-    console.error("API Error:", err);
-    res.status(500).json({ error: "Server Error" });
+    console.error("API ERROR:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
@@ -91,7 +120,7 @@ app.post("/api/data", async (req, res) => {
 app.get("/", async (req, res) => {
   try {
     const machines = await pool.query(
-      "SELECT * FROM machines ORDER BY last_seen DESC"
+      "SELECT * FROM public.machines ORDER BY last_seen DESC"
     );
 
     let html = `
@@ -131,7 +160,7 @@ app.get("/", async (req, res) => {
     res.send(html);
 
   } catch (err) {
-    console.error("Dashboard Error:", err);
+    console.error("DASHBOARD ERROR:", err);
     res.send("<h2>Dashboard Error - Check Logs</h2>");
   }
 });
