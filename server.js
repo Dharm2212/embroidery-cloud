@@ -7,17 +7,27 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ===== DATABASE CONNECTION =====
+// ================= DATABASE CONNECTION =================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-pool.connect()
-  .then(() => console.log("PostgreSQL Connected"))
-  .catch(err => console.error("DB Connection Error:", err));
+// Check DB connection + show DB name
+(async () => {
+  try {
+    await pool.connect();
+    console.log("PostgreSQL Connected");
 
-// ================= API: RECEIVE DATA =================
+    const result = await pool.query("SELECT current_database()");
+    console.log("BACKEND CONNECTED TO DB:", result.rows[0].current_database);
+
+  } catch (err) {
+    console.error("DB Connection Error:", err);
+  }
+})();
+
+// ================= RECEIVE DATA =================
 app.post("/api/data", async (req, res) => {
   try {
     const { deviceId, stitches, threadBreak, status, event } = req.body;
@@ -26,7 +36,6 @@ app.post("/api/data", async (req, res) => {
       return res.status(400).json({ error: "Missing deviceId" });
     }
 
-    // Check if machine exists
     let machine = await pool.query(
       "SELECT * FROM machines WHERE machine_uid=$1",
       [deviceId]
@@ -35,19 +44,17 @@ app.post("/api/data", async (req, res) => {
     let machineId;
 
     if (machine.rows.length === 0) {
-      // Create new machine
-      const result = await pool.query(
+      const insert = await pool.query(
         `INSERT INTO machines
          (machine_uid, status, total_stitches, thread_break_count)
          VALUES ($1,$2,$3,$4)
          RETURNING *`,
         [deviceId, status || "OFF", stitches || 0, threadBreak || 0]
       );
-      machineId = result.rows[0].id;
+      machineId = insert.rows[0].id;
     } else {
       machineId = machine.rows[0].id;
 
-      // Update machine
       await pool.query(
         `UPDATE machines
          SET status=$1,
@@ -59,7 +66,6 @@ app.post("/api/data", async (req, res) => {
       );
     }
 
-    // Insert event
     await pool.query(
       `INSERT INTO machine_events
        (machine_id, stitch_count, thread_break, status, event_type)
@@ -126,7 +132,7 @@ app.get("/", async (req, res) => {
 
   } catch (err) {
     console.error("Dashboard Error:", err);
-    res.status(500).send("Dashboard Error");
+    res.send("<h2>Dashboard Error - Check Logs</h2>");
   }
 });
 
