@@ -18,7 +18,7 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-/* ================= MQTT SETUP ================= */
+/* ================= MQTT ================= */
 
 const mqttClient = mqtt.connect(process.env.MQTT_URL, {
   username: process.env.MQTT_USER,
@@ -32,41 +32,67 @@ mqttClient.on("connect", () => {
 /* ================= FILE STORAGE ================= */
 
 const uploadPath = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadPath)) fs.mkdirSync(uploadPath);
+if (!fs.existsSync(uploadPath)) {
+  fs.mkdirSync(uploadPath);
+}
 
 const storage = multer.diskStorage({
   destination: uploadPath,
   filename: (req, file, cb) => {
-    cb(null, "machine_file.bin");
+    cb(null, "machine_file.bin"); // always overwrite
   }
 });
 
 const upload = multer({
   storage,
-  limits: { fileSize: 3 * 1024 * 1024 }
+  limits: { fileSize: 3 * 1024 * 1024 } // 3MB max
 });
 
-/* ================= INIT TABLE ================= */
+/* ================= ROUTES ================= */
 
-(async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS public.files (
-      id SERIAL PRIMARY KEY,
-      file_name VARCHAR(255),
-      file_version INT DEFAULT 1,
-      file_size INT,
-      uploaded_at TIMESTAMP DEFAULT NOW()
+// ROOT
+app.get("/", (req, res) => {
+  res.send("Embroidery IoT Server Running 🚀");
+});
+
+// VERSION CHECK
+app.get("/api/file-version", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT file_version FROM public.files ORDER BY id DESC LIMIT 1"
     );
-  `);
-})();
 
-/* ================= FILE UPLOAD ================= */
+    if (result.rows.length === 0)
+      return res.json({ version: 0 });
 
+    res.json({ version: result.rows[0].file_version });
+
+  } catch (err) {
+    res.status(500).json({ error: "DB error" });
+  }
+});
+
+// DOWNLOAD FILE
+app.get("/api/download-file", (req, res) => {
+  const filePath = path.join(uploadPath, "machine_file.bin");
+
+  if (!fs.existsSync(filePath))
+    return res.status(404).send("No file");
+
+  res.download(filePath);
+});
+
+// UPLOAD FILE
 app.post("/api/upload-file", upload.single("file"), async (req, res) => {
 
   try {
 
-    const stats = fs.statSync(path.join(uploadPath, "machine_file.bin"));
+    const filePath = path.join(uploadPath, "machine_file.bin");
+
+    if (!fs.existsSync(filePath))
+      return res.status(400).json({ error: "File missing" });
+
+    const stats = fs.statSync(filePath);
     const fileSize = stats.size;
 
     const versionCheck = await pool.query(
@@ -82,15 +108,14 @@ app.post("/api/upload-file", upload.single("file"), async (req, res) => {
       ["machine_file.bin", newVersion, fileSize]
     );
 
-    /* ===== MQTT PUBLISH UPDATE ===== */
-
-    const updateMessage = JSON.stringify({
+    // MQTT notify
+    const message = JSON.stringify({
       version: newVersion,
       size: fileSize,
-      url: "https://embroidery-cloud.onrender.com/api/download-file"
+      url: process.env.BASE_URL + "/api/download-file"
     });
 
-    mqttClient.publish("machine/MACHINE_01/update", updateMessage);
+    mqttClient.publish("machine/MACHINE_01/update", message);
 
     res.json({ success: true, version: newVersion });
 
@@ -100,18 +125,7 @@ app.post("/api/upload-file", upload.single("file"), async (req, res) => {
   }
 });
 
-/* ================= FILE DOWNLOAD ================= */
-
-app.get("/api/download-file", (req, res) => {
-  const filePath = path.join(uploadPath, "machine_file.bin");
-
-  if (!fs.existsSync(filePath))
-    return res.status(404).send("No file");
-
-  res.download(filePath);
-});
-
-/* ================= SERVER START ================= */
+/* ================= START SERVER ================= */
 
 app.listen(process.env.PORT || 3000, () => {
   console.log("Server running");
