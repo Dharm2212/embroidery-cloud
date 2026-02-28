@@ -7,31 +7,23 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ================= DATABASE =================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// Initialize DB + Create Tables If Missing
 (async () => {
   try {
     await pool.connect();
     console.log("PostgreSQL Connected");
 
-    const db = await pool.query("SELECT current_database()");
-    console.log("Connected Database:", db.rows[0].current_database);
-
-    const user = await pool.query("SELECT current_user");
-    console.log("Connected As User:", user.rows[0].current_user);
-
-    // Auto-create tables (SAFE)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS public.machines (
         id SERIAL PRIMARY KEY,
         machine_uid VARCHAR(100) UNIQUE NOT NULL,
         status VARCHAR(50) DEFAULT 'OFF',
         total_stitches BIGINT DEFAULT 0,
+        alter_stitches BIGINT DEFAULT 0,
         thread_break_count INT DEFAULT 0,
         last_seen TIMESTAMP DEFAULT NOW()
       );
@@ -42,6 +34,7 @@ const pool = new Pool({
         id SERIAL PRIMARY KEY,
         machine_id INT REFERENCES public.machines(id),
         stitch_count BIGINT,
+        alter_stitch_count BIGINT,
         thread_break INT,
         status VARCHAR(50),
         event_type VARCHAR(50),
@@ -49,21 +42,15 @@ const pool = new Pool({
       );
     `);
 
-    console.log("Tables verified / created");
-
+    console.log("Tables verified");
   } catch (err) {
     console.error("DB INIT ERROR:", err);
   }
 })();
 
-// ================= API =================
 app.post("/api/data", async (req, res) => {
   try {
-    const { deviceId, stitches, threadBreak, status, event } = req.body;
-
-    if (!deviceId) {
-      return res.status(400).json({ error: "Missing deviceId" });
-    }
+    const { deviceId, stitches, alterStitches, threadBreak, status, event } = req.body;
 
     let machine = await pool.query(
       "SELECT * FROM public.machines WHERE machine_uid=$1",
@@ -75,10 +62,10 @@ app.post("/api/data", async (req, res) => {
     if (machine.rows.length === 0) {
       const insert = await pool.query(
         `INSERT INTO public.machines
-         (machine_uid, status, total_stitches, thread_break_count)
-         VALUES ($1,$2,$3,$4)
+         (machine_uid, status, total_stitches, alter_stitches, thread_break_count)
+         VALUES ($1,$2,$3,$4,$5)
          RETURNING id`,
-        [deviceId, status || "OFF", stitches || 0, threadBreak || 0]
+        [deviceId, status, stitches, alterStitches, threadBreak]
       );
       machineId = insert.rows[0].id;
     } else {
@@ -88,24 +75,19 @@ app.post("/api/data", async (req, res) => {
         `UPDATE public.machines
          SET status=$1,
              total_stitches=$2,
-             thread_break_count=$3,
+             alter_stitches=$3,
+             thread_break_count=$4,
              last_seen=NOW()
-         WHERE machine_uid=$4`,
-        [status || "OFF", stitches || 0, threadBreak || 0, deviceId]
+         WHERE machine_uid=$5`,
+        [status, stitches, alterStitches, threadBreak, deviceId]
       );
     }
 
     await pool.query(
       `INSERT INTO public.machine_events
-       (machine_id, stitch_count, thread_break, status, event_type)
-       VALUES ($1,$2,$3,$4,$5)`,
-      [
-        machineId,
-        stitches || 0,
-        threadBreak || 0,
-        status || "OFF",
-        event || "heartbeat"
-      ]
+       (machine_id, stitch_count, alter_stitch_count, thread_break, status, event_type)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [machineId, stitches, alterStitches, threadBreak, status, event]
     );
 
     res.json({ success: true });
@@ -116,7 +98,6 @@ app.post("/api/data", async (req, res) => {
   }
 });
 
-// ================= DASHBOARD =================
 app.get("/", async (req, res) => {
   try {
     const machines = await pool.query(
@@ -149,6 +130,7 @@ app.get("/", async (req, res) => {
           </span>
         </p>
         <p>Total Stitches: ${m.total_stitches}</p>
+        <p>Alter Stitches: ${m.alter_stitches}</p>
         <p>Thread Break Count: ${m.thread_break_count}</p>
         <p>Last Seen: ${new Date(m.last_seen).toLocaleString()}</p>
       </div>
@@ -158,14 +140,12 @@ app.get("/", async (req, res) => {
     html += `</body></html>`;
 
     res.send(html);
-
   } catch (err) {
-    console.error("DASHBOARD ERROR:", err);
-    res.send("<h2>Dashboard Error - Check Logs</h2>");
+    console.error("Dashboard Error:", err);
+    res.send("Error");
   }
 });
 
-// ================= START SERVER =================
 app.listen(process.env.PORT || 3000, () => {
   console.log("Server running");
 });
