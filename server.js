@@ -143,17 +143,67 @@ app.post("/api/upload-file", upload.single("file"), async (req, res) => {
 });
 
 // Download file
-app.get("/api/download-file", (req, res) => {
+app.post("/api/upload-file", upload.single("file"), async (req, res) => {
 
-  const filePath = path.join(uploadPath, "machine_file.bin");
+  try {
 
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).send("No file uploaded");
+    console.log("Upload request received");
+
+    if (!req.file) {
+      console.log("No file in request");
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    const filePath = path.join(uploadPath, "machine_file.bin");
+
+    console.log("Reading file...");
+    const buffer = fs.readFileSync(filePath);
+
+    const checksum = crypto.createHash("sha256")
+                           .update(buffer)
+                           .digest("hex");
+
+    const stats = fs.statSync(filePath);
+    const fileSize = stats.size;
+
+    console.log("File size:", fileSize);
+
+    const last = await pool.query(
+      "SELECT file_version FROM files ORDER BY id DESC LIMIT 1"
+    );
+
+    const version = last.rows.length
+      ? last.rows[0].file_version + 1
+      : 1;
+
+    console.log("New version:", version);
+
+    await pool.query(
+      "INSERT INTO files (file_version,file_size,checksum) VALUES ($1,$2,$3)",
+      [version, fileSize, checksum]
+    );
+
+    mqttClient.publish(
+      "machine/MACHINE_01/update",
+      JSON.stringify({ version, size: fileSize, checksum })
+    );
+
+    console.log("MQTT Published");
+
+    res.json({ success: true, version });
+
+  } catch (err) {
+
+    console.error("FULL UPLOAD ERROR:");
+    console.error(err);
+    console.error(err.stack);
+
+    res.status(500).json({
+      error: "Upload failed",
+      details: err.message
+    });
   }
-
-  res.download(filePath);
 });
-
 // Logs
 app.get("/api/logs/:machine", async (req, res) => {
   const logs = await pool.query(
