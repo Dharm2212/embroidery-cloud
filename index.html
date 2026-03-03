@@ -4,17 +4,55 @@
 <title>Industrial Dashboard</title>
 </head>
 <body>
+
 <h2>Machine Logs</h2>
-<button onclick="load()">Refresh</button>
+<button onclick="load()">Refresh Logs</button>
 <pre id="logs"></pre>
 
+<hr>
+
+<h2>Upload Update File</h2>
+
+<form id="uploadForm">
+  <input type="file" id="fileInput" />
+  <button type="submit">Upload File</button>
+</form>
+
+<p id="uploadStatus"></p>
+
 <script>
+
 async function load(){
   const res = await fetch("/api/logs/MACHINE_01");
   const data = await res.json();
   document.getElementById("logs").innerText =
     data.map(l=>`${l.created_at} : ${l.message}`).join("\n");
 }
+
+document.getElementById("uploadForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const file = document.getElementById("fileInput").files[0];
+  if (!file) {
+    alert("Select file first");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const res = await fetch("/api/upload-file", {
+    method: "POST",
+    body: formData
+  });
+
+  const result = await res.json();
+
+  document.getElementById("uploadStatus").innerText =
+    "Upload Result: " + JSON.stringify(result);
+});
+
 </script>
+
 </body>
 </html>

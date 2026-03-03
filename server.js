@@ -102,7 +102,13 @@ app.post("/api/upload-file", upload.single("file"), async (req, res) => {
 
 // Download
 app.get("/api/download-file", (req, res) => {
-  res.download(path.join(uploadPath, "machine_file.bin"));
+  const filePath = path.join(uploadPath, "machine_file.bin");
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send("No file uploaded");
+  }
+
+  res.download(filePath);
 });
 
 // Debug
