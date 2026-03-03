@@ -5,52 +5,62 @@
 </head>
 <body>
 
-<h2>Machine Logs</h2>
-<button onclick="load()">Refresh Logs</button>
-<pre id="logs"></pre>
+<h2>Upload Update File</h2>
+
+<input type="file" id="fileInput" />
+<button onclick="uploadFile()">Upload File</button>
+
+<p id="status"></p>
 
 <hr>
 
-<h2>Upload Update File</h2>
-
-<form id="uploadForm">
-  <input type="file" id="fileInput" />
-  <button type="submit">Upload File</button>
-</form>
-
-<p id="uploadStatus"></p>
+<h2>Machine Logs</h2>
+<button onclick="loadLogs()">Refresh Logs</button>
+<pre id="logs"></pre>
 
 <script>
 
-async function load(){
-  const res = await fetch("/api/logs/MACHINE_01");
-  const data = await res.json();
-  document.getElementById("logs").innerText =
-    data.map(l=>`${l.created_at} : ${l.message}`).join("\n");
-}
-
-document.getElementById("uploadForm").addEventListener("submit", async (e) => {
-  e.preventDefault();
+async function uploadFile() {
 
   const file = document.getElementById("fileInput").files[0];
+
   if (!file) {
-    alert("Select file first");
+    alert("Select a file first");
     return;
   }
 
   const formData = new FormData();
   formData.append("file", file);
 
-  const res = await fetch("/api/upload-file", {
-    method: "POST",
-    body: formData
-  });
+  try {
 
-  const result = await res.json();
+    document.getElementById("status").innerText = "Uploading...";
 
-  document.getElementById("uploadStatus").innerText =
-    "Upload Result: " + JSON.stringify(result);
-});
+    const res = await fetch("/api/upload-file", {
+      method: "POST",
+      body: formData
+    });
+
+    const text = await res.text();
+
+    document.getElementById("status").innerText =
+      "Server Response: " + text;
+
+  } catch (err) {
+
+    document.getElementById("status").innerText =
+      "Upload Failed: " + err;
+
+    console.error(err);
+  }
+}
+
+async function loadLogs(){
+  const res = await fetch("/api/logs/MACHINE_01");
+  const data = await res.json();
+  document.getElementById("logs").innerText =
+    data.map(l=>`${l.created_at} : ${l.message}`).join("\n");
+}
 
 </script>
 
