@@ -13,9 +13,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static("public"));
 
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
-});
+/* ================= DATABASE ================= */
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -26,32 +24,52 @@ const pool = new Pool({
 
 const mqttClient = mqtt.connect(process.env.MQTT_URL, {
   username: process.env.MQTT_USER,
-  password: process.env.MQTT_PASS
+  password: process.env.MQTT_PASS,
+  reconnectPeriod: 5000
 });
 
 mqttClient.on("connect", () => {
-  console.log("MQTT Connected");
+  console.log("✅ MQTT Connected");
   mqttClient.subscribe("machine/+/status");
   mqttClient.subscribe("machine/+/progress");
   mqttClient.subscribe("machine/+/ack");
   mqttClient.subscribe("machine/+/error");
 });
 
-/* ========== MQTT MONITOR ========== */
+mqttClient.on("error", (err) => {
+  console.error("❌ MQTT Error:", err.message);
+});
+
+/* ================= MQTT MONITOR ================= */
 
 mqttClient.on("message", async (topic, message) => {
   const deviceId = topic.split("/")[1];
+  const msg = message.toString();
 
-  await pool.query(
-    "INSERT INTO machine_logs (machine_uid, message, level) VALUES ($1,$2,$3)",
-    [deviceId, message.toString(), "INFO"]
-  );
+  try {
 
-  if (topic.includes("status")) {
+    await pool.query(`
+      INSERT INTO machines (machine_uid)
+      VALUES ($1)
+      ON CONFLICT (machine_uid) DO NOTHING
+    `, [deviceId]);
+
     await pool.query(
-      "UPDATE machines SET last_seen=NOW(), status=$1 WHERE machine_uid=$2",
-      [message.toString(), deviceId]
+      "INSERT INTO machine_logs (machine_uid, message, level) VALUES ($1,$2,$3)",
+      [deviceId, msg, "INFO"]
     );
+
+    if (topic.includes("status")) {
+      await pool.query(
+        "UPDATE machines SET last_seen=NOW(), status=$1 WHERE machine_uid=$2",
+        [msg, deviceId]
+      );
+    }
+
+    console.log(`📩 ${topic} → ${msg}`);
+
+  } catch (err) {
+    console.error("DB Error:", err.message);
   }
 });
 
@@ -72,41 +90,61 @@ const upload = multer({
 
 /* ================= ROUTES ================= */
 
-// Upload
-app.post("/api/upload-file", upload.single("file"), async (req, res) => {
-
-  const filePath = path.join(uploadPath, "machine_file.bin");
-
-  const fileBuffer = fs.readFileSync(filePath);
-  const checksum = crypto.createHash("sha256")
-                         .update(fileBuffer)
-                         .digest("hex");
-
-  const stats = fs.statSync(filePath);
-  const fileSize = stats.size;
-
-  const last = await pool.query(
-    "SELECT file_version FROM files ORDER BY id DESC LIMIT 1"
-  );
-
-  const version = last.rows.length ? last.rows[0].file_version + 1 : 1;
-
-  await pool.query(
-    "INSERT INTO files (file_version,file_size,checksum) VALUES ($1,$2,$3)",
-    [version, fileSize, checksum]
-  );
-
-  mqttClient.publish("machine/MACHINE_01/update", JSON.stringify({
-    version,
-    size: fileSize,
-    checksum
-  }));
-
-  res.json({ success: true, version });
+// Root
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// Download
+// Upload file
+app.post("/api/upload-file", upload.single("file"), async (req, res) => {
+
+  try {
+
+    if (!req.file) {
+      return res.status(400).json({ error: "No file selected" });
+    }
+
+    const filePath = path.join(uploadPath, "machine_file.bin");
+
+    const buffer = fs.readFileSync(filePath);
+    const checksum = crypto.createHash("sha256")
+                           .update(buffer)
+                           .digest("hex");
+
+    const stats = fs.statSync(filePath);
+    const fileSize = stats.size;
+
+    const last = await pool.query(
+      "SELECT file_version FROM files ORDER BY id DESC LIMIT 1"
+    );
+
+    const version = last.rows.length
+      ? last.rows[0].file_version + 1
+      : 1;
+
+    await pool.query(
+      "INSERT INTO files (file_version,file_size,checksum) VALUES ($1,$2,$3)",
+      [version, fileSize, checksum]
+    );
+
+    mqttClient.publish(
+      "machine/MACHINE_01/update",
+      JSON.stringify({ version, size: fileSize, checksum })
+    );
+
+    console.log("🚀 Update Published");
+
+    res.json({ success: true, version });
+
+  } catch (err) {
+    console.error("Upload Error:", err.message);
+    res.status(500).json({ error: "Upload failed" });
+  }
+});
+
+// Download file
 app.get("/api/download-file", (req, res) => {
+
   const filePath = path.join(uploadPath, "machine_file.bin");
 
   if (!fs.existsSync(filePath)) {
@@ -116,15 +154,23 @@ app.get("/api/download-file", (req, res) => {
   res.download(filePath);
 });
 
-// Debug
+// Logs
 app.get("/api/logs/:machine", async (req, res) => {
   const logs = await pool.query(
-    "SELECT * FROM machine_logs WHERE machine_uid=$1 ORDER BY created_at DESC LIMIT 50",
+    "SELECT * FROM machine_logs WHERE machine_uid=$1 ORDER BY created_at DESC LIMIT 100",
     [req.params.machine]
   );
   res.json(logs.rows);
 });
 
+// Machines list
+app.get("/api/machines", async (req, res) => {
+  const machines = await pool.query(
+    "SELECT * FROM machines ORDER BY last_seen DESC"
+  );
+  res.json(machines.rows);
+});
+
 app.listen(process.env.PORT || 3000, () =>
-  console.log("Industrial Server Running")
+  console.log("🔥 Industrial Server Running")
 );
