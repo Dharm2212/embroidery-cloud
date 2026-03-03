@@ -1,78 +1,101 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<title>Industrial IoT Dashboard</title>
-<style>
-body { font-family: Arial; padding:20px; }
-.card { border:1px solid #ccc; padding:15px; margin:10px 0; }
-</style>
+    <meta charset="UTF-8">
+    <title>Industrial IoT Dashboard</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding:20px; background: #f4f7f6; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .card { background: white; border-radius: 8px; padding:15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 10px; }
+        .machine-card { border-left: 5px solid #007bff; cursor: pointer; }
+        .machine-card:hover { background: #e9ecef; }
+        pre { background: #222; color: #0f0; padding: 10px; border-radius: 5px; height: 300px; overflow-y: auto; }
+        button { background: #007bff; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; }
+        button:disabled { background: #ccc; }
+    </style>
 </head>
 <body>
 
-<h1>Industrial Machine Dashboard</h1>
+    <h1>Industrial Control Center</h1>
 
-<h2>Upload Update</h2>
-<input type="file" id="fileInput" />
-<button onclick="upload()">Upload</button>
-<p id="uploadStatus"></p>
+    <div class="grid">
+        <section>
+            <div class="card">
+                <h2>Firmware Update</h2>
+                <input type="file" id="fileInput" />
+                <button id="upBtn" onclick="upload()">Push Update to Machines</button>
+                <p id="uploadStatus"></p>
+            </div>
 
-<hr>
+            <h2>Active Machines</h2>
+            <div id="machines"></div>
+        </section>
 
-<h2>Machines</h2>
-<div id="machines"></div>
+        <section>
+            <div class="card">
+                <h2>Live Logs: <span id="currentMachine">None</span></h2>
+                <button onclick="loadLogs()">Manual Refresh</button>
+                <pre id="logs">Select a machine to view logs...</pre>
+            </div>
+        </section>
+    </div>
 
-<hr>
+    <script>
+        let selectedMachine = "MACHINE_01";
 
-<h2>Logs (MACHINE_01)</h2>
-<button onclick="loadLogs()">Refresh Logs</button>
-<pre id="logs"></pre>
+        async function upload() {
+            const file = document.getElementById("fileInput").files[0];
+            if (!file) return alert("Select a binary file first");
 
-<script>
+            const btn = document.getElementById("upBtn");
+            btn.disabled = true;
+            const formData = new FormData();
+            formData.append("file", file);
 
-async function upload() {
+            document.getElementById("uploadStatus").innerText = "Uploading & Notifying Machines...";
 
-  const file = document.getElementById("fileInput").files[0];
-  if (!file) return alert("Select file first");
+            try {
+                const res = await fetch("/api/upload-file", { method: "POST", body: formData });
+                const data = await res.json();
+                document.getElementById("uploadStatus").innerText = "Success! Version: " + data.version;
+            } catch (e) {
+                document.getElementById("uploadStatus").innerText = "Error uploading.";
+            } finally {
+                btn.disabled = false;
+            }
+        }
 
-  const formData = new FormData();
-  formData.append("file", file);
+        async function loadMachines() {
+            const res = await fetch("/api/machines");
+            const data = await res.json();
+            document.getElementById("machines").innerHTML = data.map(m => `
+                <div class="card machine-card" onclick="setMachine('${m.machine_uid}')">
+                    <strong>ID: ${m.machine_uid}</strong><br>
+                    Status: <span style="color:${m.status === 'ONLINE' ? 'green' : 'red'}">${m.status}</span><br>
+                    <small>Last Seen: ${new Date(m.last_seen).toLocaleString()}</small>
+                </div>
+            `).join("");
+        }
 
-  document.getElementById("uploadStatus").innerText = "Uploading...";
+        function setMachine(id) {
+            selectedMachine = id;
+            document.getElementById("currentMachine").innerText = id;
+            loadLogs();
+        }
 
-  const res = await fetch("/api/upload-file", {
-    method: "POST",
-    body: formData
-  });
+        async function loadLogs() {
+            if (!selectedMachine) return;
+            const res = await fetch(`/api/logs/${selectedMachine}`);
+            const data = await res.json();
+            document.getElementById("logs").innerText = data.length 
+                ? data.map(l => `[${new Date(l.created_at).toLocaleTimeString()}] ${l.message}`).join("\n")
+                : "No logs found for this machine.";
+        }
 
-  const data = await res.json();
-  document.getElementById("uploadStatus").innerText =
-    JSON.stringify(data);
-}
-
-async function loadLogs(){
-  const res = await fetch("/api/logs/MACHINE_01");
-  const data = await res.json();
-  document.getElementById("logs").innerText =
-    data.map(l => `${l.created_at} : ${l.message}`).join("\n");
-}
-
-async function loadMachines(){
-  const res = await fetch("/api/machines");
-  const data = await res.json();
-  document.getElementById("machines").innerHTML =
-    data.map(m =>
-      `<div class="card">
-        <b>${m.machine_uid}</b><br>
-        Status: ${m.status}<br>
-        Last Seen: ${m.last_seen}
-      </div>`
-    ).join("");
-}
-
-setInterval(loadMachines, 5000);
-loadMachines();
-
-</script>
-
+        // Intervals
+        setInterval(loadMachines, 5000);
+        setInterval(loadLogs, 3000);
+        loadMachines();
+    </script>
 </body>
 </html>
