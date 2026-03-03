@@ -110,47 +110,38 @@ app.get("/api/logs/:machine", async (req, res) => {
 // Unified Upload Route - Replacing the two duplicates
 app.post("/api/upload-file", upload.single("file"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file provided" });
-    }
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
     const filePath = req.file.path;
     const buffer = fs.readFileSync(filePath);
-    
-    // Calculate hash for integrity check
     const checksum = crypto.createHash("sha256").update(buffer).digest("hex");
     const fileSize = req.file.size;
 
-    // Get the next version number safely
-    const result = await pool.query(
-      "SELECT COALESCE(MAX(file_version), 0) + 1 AS next_version FROM files"
-    );
-    const nextVersion = result.rows[0].next_version;
+    // 1. Get Version Safely
+    const versionRes = await pool.query("SELECT MAX(file_version) AS max_v FROM files");
+    const nextVersion = (versionRes.rows[0].max_v || 0) + 1;
 
-    // Save to Database
+    // 2. Insert into DB (Make sure column names match Step 1)
     await pool.query(
       "INSERT INTO files (file_version, file_size, checksum, file_path) VALUES ($1, $2, $3, $4)",
       [nextVersion, fileSize, checksum, req.file.filename]
     );
 
-    // Notify machines via MQTT
-    const mqttPayload = JSON.stringify({ 
-      version: nextVersion, 
-      size: fileSize, 
-      checksum: checksum 
+    // 3. MQTT Broadcast
+    const payload = JSON.stringify({ 
+        version: nextVersion, 
+        size: fileSize, 
+        checksum: checksum,
+        downloadUrl: `/uploads/${req.file.filename}` 
     });
     
-    mqttClient.publish("machine/all/update", mqttPayload, { qos: 1 });
+    mqttClient.publish("machine/all/update", payload);
 
-    // CRITICAL: Ensure the key names here match the frontend exactly
-    res.json({ 
-      success: true, 
-      version: nextVersion, 
-      checksum: checksum 
-    });
+    res.json({ success: true, version: nextVersion });
 
   } catch (err) {
-    console.error("Upload Error:", err);
+    // This will print the EXACT error to your terminal (e.g., "column file_path does not exist")
+    console.error("DETAILED UPLOAD ERROR:", err.message);
     res.status(500).json({ error: "Server error during upload", details: err.message });
   }
 });
