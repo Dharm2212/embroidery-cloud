@@ -1,109 +1,67 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>IIOT Control Panel</title>
-    <style>
-        body { font-family: sans-serif; background: #f0f2f5; padding: 20px; display: grid; grid-template-columns: 300px 1fr; gap: 20px; }
-        .sidebar { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .main { display: flex; flex-direction: column; gap: 20px; }
-        .card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .machine-item { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; }
-        .machine-item:hover { background: #f9f9f9; }
-        pre { background: #1e1e1e; color: #4af626; padding: 15px; border-radius: 5px; height: 300px; overflow-y: auto; font-size: 12px; }
-        .status-on { color: green; font-weight: bold; }
-        .status-off { color: red; }
-    </style>
+  <title>File Upload System</title>
 </head>
 <body>
 
-<div class="sidebar">
-    <h3>Firmware Deployment</h3>
-    <input type="file" id="fileInput" style="width:100%; margin-bottom:10px;">
-    <button onclick="upload()" id="upBtn" style="width:100%; padding:10px; background:#007bff; color:white; border:none; border-radius:4px;">Push Update</button>
-    <p id="uploadStatus" style="font-size:12px; margin-top:10px;"></p>
-    
-    <hr>
-    <h4>Version History</h4>
-    <div id="versionHistory" style="font-size:12px; color:#666;"></div>
-</div>
+  <h2>Upload File</h2>
 
-<div class="main">
-    <div class="card">
-        <h2>Connected Machines</h2>
-        <div id="machines">Loading...</div>
-    </div>
+  <form id="uploadForm">
+    <input type="file" name="file" required />
+    <button type="submit">Upload</button>
+  </form>
 
-    <div class="card">
-        <h2>Live Logs: <span id="currentMachine">Select Machine</span></h2>
-        <pre id="logs">Select a machine from the left to view activity...</pre>
-    </div>
-</div>
+  <p id="message"></p>
 
-<script>
-let activeMachine = "";
+  <h2>Uploaded Files</h2>
+  <ul id="fileList"></ul>
 
-async function upload() {
-    const file = document.getElementById("fileInput").files[0];
-    if(!file) return alert("Select file!");
-    
-    const btn = document.getElementById("upBtn");
-    btn.disabled = true;
-    document.getElementById("uploadStatus").innerText = "Uploading...";
+  <script>
+    const form = document.getElementById("uploadForm");
+    const message = document.getElementById("message");
+    const fileList = document.getElementById("fileList");
 
-    const fd = new FormData();
-    fd.append("file", file);
+    // Upload
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
 
-    const res = await fetch("/api/upload-file", { method: "POST", body: fd });
-    const data = await res.json();
-    
-    if(data.success) {
-        document.getElementById("uploadStatus").innerText = "✅ Deployed v" + data.version;
-        loadVersions();
-    } else {
-        document.getElementById("uploadStatus").innerText = "❌ Error: " + data.error;
+      const formData = new FormData(form);
+
+      const response = await fetch("/upload", {
+        method: "POST",
+        body: formData
+      });
+
+      const data = await response.json();
+
+      message.innerText = data.message || 
+        (data.success ? "Upload successful!" : "Upload failed");
+
+      loadFiles();
+    });
+
+    // Load file list
+    async function loadFiles() {
+      const response = await fetch("/files");
+      const data = await response.json();
+
+      fileList.innerHTML = "";
+
+      if (data.files) {
+        data.files.forEach(file => {
+          const li = document.createElement("li");
+          li.innerHTML = `
+            ${file} 
+            <a href="/download/${file}" target="_blank">Download</a>
+          `;
+          fileList.appendChild(li);
+        });
+      }
     }
-    btn.disabled = false;
-}
 
-async function loadMachines() {
-    const res = await fetch("/api/machines");
-    const data = await res.json();
-    document.getElementById("machines").innerHTML = data.map(m => `
-        <div class="machine-item" onclick="setMachine('${m.machine_uid}')">
-            <strong>${m.machine_uid}</strong> - 
-            <span class="${m.status === 'ONLINE' ? 'status-on' : 'status-off'}">${m.status || 'UNKNOWN'}</span>
-            <br><small>Seen: ${new Date(m.last_seen).toLocaleTimeString()}</small>
-        </div>
-    `).join("");
-}
+    loadFiles();
+  </script>
 
-async function loadVersions() {
-    const res = await fetch("/api/versions");
-    const data = await res.json();
-    document.getElementById("versionHistory").innerHTML = data.map(v => `
-        <div>v${v.file_version} - ${v.file_path.split('-')[1]}</div>
-    `).join("");
-}
-
-function setMachine(id) {
-    activeMachine = id;
-    document.getElementById("currentMachine").innerText = id;
-    loadLogs();
-}
-
-async function loadLogs() {
-    if(!activeMachine) return;
-    const res = await fetch("/api/logs/" + activeMachine);
-    const data = await res.json();
-    document.getElementById("logs").innerText = data.map(l => `[${new Date(l.created_at).toLocaleTimeString()}] ${l.message}`).join("\n");
-}
-
-// Auto-refresh
-setInterval(loadMachines, 5000);
-setInterval(loadLogs, 3000);
-loadMachines();
-loadVersions();
-
-</script>
 </body>
 </html>
