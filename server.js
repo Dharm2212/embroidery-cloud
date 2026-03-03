@@ -107,33 +107,51 @@ app.get("/api/logs/:machine", async (req, res) => {
 });
 
 // Single Unified Upload Route
+// Unified Upload Route - Replacing the two duplicates
 app.post("/api/upload-file", upload.single("file"), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    if (!req.file) {
+      return res.status(400).json({ error: "No file provided" });
+    }
 
     const filePath = req.file.path;
     const buffer = fs.readFileSync(filePath);
+    
+    // Calculate hash for integrity check
     const checksum = crypto.createHash("sha256").update(buffer).digest("hex");
     const fileSize = req.file.size;
 
-    // Get next version number
-    const last = await pool.query("SELECT MAX(file_version) as ver FROM files");
-    const version = (last.rows[0].ver || 0) + 1;
+    // Get the next version number safely
+    const result = await pool.query(
+      "SELECT COALESCE(MAX(file_version), 0) + 1 AS next_version FROM files"
+    );
+    const nextVersion = result.rows[0].next_version;
 
-    // Save to DB
+    // Save to Database
     await pool.query(
       "INSERT INTO files (file_version, file_size, checksum, file_path) VALUES ($1, $2, $3, $4)",
-      [version, fileSize, checksum, req.file.filename]
+      [nextVersion, fileSize, checksum, req.file.filename]
     );
 
-    // Notify ALL machines or specific ones via MQTT
-    const payload = JSON.stringify({ version, size: fileSize, checksum, url: `/uploads/${req.file.filename}` });
-    mqttClient.publish("machine/all/update", payload); 
+    // Notify machines via MQTT
+    const mqttPayload = JSON.stringify({ 
+      version: nextVersion, 
+      size: fileSize, 
+      checksum: checksum 
+    });
+    
+    mqttClient.publish("machine/all/update", mqttPayload, { qos: 1 });
 
-    res.json({ success: true, version, checksum });
+    // CRITICAL: Ensure the key names here match the frontend exactly
+    res.json({ 
+      success: true, 
+      version: nextVersion, 
+      checksum: checksum 
+    });
+
   } catch (err) {
     console.error("Upload Error:", err);
-    res.status(500).json({ error: "Upload failed", details: err.message });
+    res.status(500).json({ error: "Server error during upload", details: err.message });
   }
 });
 

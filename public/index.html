@@ -44,26 +44,39 @@
         let selectedMachine = "MACHINE_01";
 
         async function upload() {
-            const file = document.getElementById("fileInput").files[0];
-            if (!file) return alert("Select a binary file first");
+  const fileInput = document.getElementById("fileInput");
+  const status = document.getElementById("uploadStatus");
+  
+  if (!fileInput.files[0]) return alert("Please select a file.");
 
-            const btn = document.getElementById("upBtn");
-            btn.disabled = true;
-            const formData = new FormData();
-            formData.append("file", file);
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
 
-            document.getElementById("uploadStatus").innerText = "Uploading & Notifying Machines...";
+  status.innerText = "Processing...";
 
-            try {
-                const res = await fetch("/api/upload-file", { method: "POST", body: formData });
-                const data = await res.json();
-                document.getElementById("uploadStatus").innerText = "Success! Version: " + data.version;
-            } catch (e) {
-                document.getElementById("uploadStatus").innerText = "Error uploading.";
-            } finally {
-                btn.disabled = false;
-            }
-        }
+  try {
+    const res = await fetch("/api/upload-file", {
+      method: "POST",
+      body: formData
+    });
+
+    const data = await res.json();
+
+    if (res.ok) {
+      // Success: data.version will now be defined
+      status.style.color = "green";
+      status.innerText = `🚀 Success! Deployment Version: ${data.version}`;
+    } else {
+      // Server returned an error (e.g., 400 or 500)
+      status.style.color = "red";
+      status.innerText = `❌ Error: ${data.error || 'Unknown error'}`;
+    }
+  } catch (err) {
+    // Network or parsing error
+    status.style.color = "red";
+    status.innerText = "❌ Network error. Check server console.";
+  }
+}
 
         async function loadMachines() {
             const res = await fetch("/api/machines");
