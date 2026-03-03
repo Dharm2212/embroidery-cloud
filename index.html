@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Industrial Dashboard</title>
+</head>
+<body>
+<h2>Machine Logs</h2>
+<button onclick="load()">Refresh</button>
+<pre id="logs"></pre>
+
+<script>
+async function load(){
+  const res = await fetch("/api/logs/MACHINE_01");
+  const data = await res.json();
+  document.getElementById("logs").innerText =
+    data.map(l=>`${l.created_at} : ${l.message}`).join("\n");
+}
+</script>
+</body>
+</html>
